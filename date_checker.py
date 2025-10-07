@@ -6,12 +6,16 @@ import time
 from datetime import datetime
 import re
 import shutil
+import warnings
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
     HEIF_SUPPORT = True
 except ImportError:
     HEIF_SUPPORT = False
+
+# Increase the decompression bomb limit or catch the warning
+Image.MAX_IMAGE_PIXELS = None  # Remove limit entirely (or set to a higher value like 200000000)
 
 def get_date_taken(filepath):
     """
@@ -21,45 +25,44 @@ def get_date_taken(filepath):
     Raises exception with filepath if there's an error.
     """
     try:
-        image = Image.open(filepath)
-        
-        # Method 1: Use getexif() - newer and more reliable
-        if hasattr(image, 'getexif'):
-            exif_data = image.getexif()
-            if exif_data:
-                # ONLY check DateTimeOriginal (36867) - the actual photo capture time
-                # Do NOT use:
-                #   - 306 (DateTime) = file modification time
-                #   - 36868 (DateTimeDigitized) = scan/digitization time
-                value = exif_data.get(36867)  # DateTimeOriginal ONLY
-                if value and isinstance(value, (str, bytes)):
-                    if isinstance(value, bytes):
-                        try:
-                            value = value.decode('utf-8')
-                        except:
-                            return None
-                    # Check if it looks like a date (not binary junk)
-                    if value and ':' in value and len(value) >= 10:
-                        return value
-        
-        # Method 2: Try _getexif() for older Pillow versions
-        if hasattr(image, '_getexif'):
-            exif_data = image._getexif()
-            if exif_data and isinstance(exif_data, dict):
-                for tag_id, value in exif_data.items():
-                    tag_name = TAGS.get(tag_id, '')
-                    # ONLY accept DateTimeOriginal
-                    if tag_name == 'DateTimeOriginal':
-                        if isinstance(value, (str, bytes)):
-                            if isinstance(value, bytes):
-                                try:
-                                    value = value.decode('utf-8')
-                                except:
-                                    return None
-                            if value and ':' in value and len(value) >= 10:
-                                return value
-        
-        return None
+        with Image.open(filepath) as image:
+            # Method 1: Use getexif() - newer and more reliable
+            if hasattr(image, 'getexif'):
+                exif_data = image.getexif()
+                if exif_data:
+                    # ONLY check DateTimeOriginal (36867) - the actual photo capture time
+                    # Do NOT use:
+                    #   - 306 (DateTime) = file modification time
+                    #   - 36868 (DateTimeDigitized) = scan/digitization time
+                    value = exif_data.get(36867)  # DateTimeOriginal ONLY
+                    if value and isinstance(value, (str, bytes)):
+                        if isinstance(value, bytes):
+                            try:
+                                value = value.decode('utf-8')
+                            except:
+                                return None
+                        # Check if it looks like a date (not binary junk)
+                        if value and ':' in value and len(value) >= 10:
+                            return value
+            
+            # Method 2: Try _getexif() for older Pillow versions
+            if hasattr(image, '_getexif'):
+                exif_data = image._getexif()
+                if exif_data and isinstance(exif_data, dict):
+                    for tag_id, value in exif_data.items():
+                        tag_name = TAGS.get(tag_id, '')
+                        # ONLY accept DateTimeOriginal
+                        if tag_name == 'DateTimeOriginal':
+                            if isinstance(value, (str, bytes)):
+                                if isinstance(value, bytes):
+                                    try:
+                                        value = value.decode('utf-8')
+                                    except:
+                                        return None
+                                if value and ':' in value and len(value) >= 10:
+                                    return value
+            
+            return None
     except Exception as e:
         # Re-raise with filepath info
         raise Exception(f"Error processing {filepath}: {str(e)}")
@@ -155,6 +158,7 @@ def scan_directory(directory_path):
     non_image_files = 0
     video_files = 0
     error_files = 0
+    warning_files = 0
     files_with_date_list = []
     files_without_date_list = []
     files_with_folder_date_list = []
@@ -162,6 +166,7 @@ def scan_directory(directory_path):
     skipped_files_list = []
     video_files_list = []
     error_files_list = []
+    warning_files_list = []
     
     print(f"Scanning directory: {directory_path}\n")
     if not HEIF_SUPPORT:
@@ -183,7 +188,17 @@ def scan_directory(directory_path):
             # Check if it's an image file
             if file_ext in image_extensions:
                 try:
-                    date_taken = get_date_taken(filepath)
+                    # Catch warnings (like DecompressionBombWarning)
+                    with warnings.catch_warnings(record=True) as w:
+                        warnings.simplefilter("always")
+                        date_taken = get_date_taken(filepath)
+                        
+                        # Check if any warnings were raised
+                        if w:
+                            warning_files += 1
+                            warning_msg = str(w[0].message) if w else "Unknown warning"
+                            warning_files_list.append((filepath, warning_msg))
+                            print(f"  ⚠ Warning on: {filename} - {warning_msg}")
                     
                     if date_taken:
                         # Check if date matches folder structure
@@ -222,18 +237,20 @@ def scan_directory(directory_path):
         'non_image': non_image_files,
         'video_files': video_files,
         'error_files': error_files,
+        'warning_files': warning_files,
         'with_date_list': files_with_date_list,
         'with_folder_date_list': files_with_folder_date_list,
         'with_mismatched_date_list': files_with_mismatched_date_list,
         'without_date_list': files_without_date_list,
         'skipped_files_list': skipped_files_list,
         'video_files_list': video_files_list,
-        'error_files_list': error_files_list
+        'error_files_list': error_files_list,
+        'warning_files_list': warning_files_list
     }
 
-def move_mismatched_files(mismatched_list, destination_folder):
+def move_files_with_date(files_with_date_list, destination_folder):
     """
-    Move mismatched files to destination folder.
+    Move files with valid EXIF date taken to destination folder.
     Returns lists of moved and skipped files.
     """
     moved_files = []
@@ -244,9 +261,9 @@ def move_mismatched_files(mismatched_list, destination_folder):
         os.makedirs(destination_folder)
         print(f"Created destination folder: {destination_folder}")
     
-    print(f"\nMoving {len(mismatched_list)} files to {destination_folder}...")
+    print(f"\nMoving {len(files_with_date_list)} files to {destination_folder}...")
     
-    for filepath, date_taken, folder_year, folder_month in mismatched_list:
+    for filepath, date_taken, from_folder in files_with_date_list:
         filename = os.path.basename(filepath)
         dest_path = os.path.join(destination_folder, filename)
         
@@ -322,6 +339,7 @@ def main():
     output_lines.append(f"Video files (skipped):       {results['video_files']}")
     output_lines.append(f"Non-image files (skipped):   {results['non_image']}")
     output_lines.append(f"Files with errors:           {results['error_files']}")
+    output_lines.append(f"Files with warnings:         {results['warning_files']}")
     output_lines.append(f"Total image files:           {results['with_date'] + results['with_folder_date'] + results['without_date']}")
     output_lines.append("="*60)
     
@@ -340,6 +358,17 @@ def main():
                 line = f"  ❌ {filepath}"
                 output_lines.append(line)
                 print(line)
+        
+        if results['warning_files_list']:
+            output_lines.append("\n--- Files That Caused Warnings ---")
+            print("\n--- Files That Caused Warnings ---")
+            for filepath, warning_msg in results['warning_files_list']:
+                line = f"  ⚠ {filepath}"
+                detail_line = f"     {warning_msg}"
+                output_lines.append(line)
+                output_lines.append(detail_line)
+                print(line)
+                print(detail_line)
         
         if results['with_mismatched_date_list']:
             output_lines.append("\n--- Files WHERE Date Does NOT Match Folder ---")
@@ -400,31 +429,35 @@ def main():
     except Exception as e:
         print(f"\n✗ Error saving file: {e}")
     
-    # Ask about moving mismatched files
-    if results['with_mismatched_date'] > 0:
+    # Ask about moving files with valid date taken
+    if results['with_date'] > 0:
         print(f"\n{'='*60}")
-        print(f"Found {results['with_mismatched_date']} files with dates that don't match their folder.")
+        print(f"Found {results['with_date']} files with valid 'Date Taken' in EXIF data.")
+        
+        # Save list of files to be moved FIRST
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        files_to_move_list = f"files_to_move_{timestamp}.txt"
+        
+        print(f"\nSaving list of files to: {files_to_move_list}")
+        with open(files_to_move_list, 'w', encoding='utf-8') as f:
+            f.write(f"Files with valid Date Taken to be moved to C:\\Users\\brian\\Pictures\\iCloud Photos\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("="*60 + "\n\n")
+            for filepath, date_taken, from_folder in results['with_date_list']:
+                formatted_date = format_date_taken(date_taken, from_folder)
+                f.write(f"[{formatted_date}] {filepath}\n")
+        
+        print(f"✓ File list saved. Please review: {files_to_move_list}")
+        print("\nPress Enter after reviewing the file list to continue...")
+        input()
+        
         move_choice = input("Do you want to move these files to C:\\Users\\brian\\Pictures\\iCloud Photos? (y/n): ").strip().lower()
         
         if move_choice == 'y':
             destination = r"C:\Users\brian\Pictures\iCloud Photos"
             
-            # Save list of files to be moved
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            files_to_move_list = f"files_to_move_{timestamp}.txt"
-            
-            print(f"\nSaving list of files to move to: {files_to_move_list}")
-            with open(files_to_move_list, 'w', encoding='utf-8') as f:
-                f.write(f"Files to be moved to {destination}\n")
-                f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write("="*60 + "\n\n")
-                for filepath, date_taken, folder_year, folder_month in results['with_mismatched_date_list']:
-                    formatted_date = format_date_taken(date_taken, False)
-                    f.write(f"[{formatted_date}] in folder {folder_year}\\{folder_month}\n")
-                    f.write(f"  {filepath}\n\n")
-            
             # Perform the move
-            moved_files, skipped_files = move_mismatched_files(results['with_mismatched_date_list'], destination)
+            moved_files, skipped_files = move_files_with_date(results['with_date_list'], destination)
             
             # Save results
             print(f"\nMove operation completed:")

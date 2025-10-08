@@ -21,12 +21,11 @@ def get_date_taken(filepath):
     """
     Extract 'Date Taken' from image EXIF data.
     Returns the date if found, None otherwise.
-    Supports JPEG, TIFF, PNG, HEIC, and RAF (Fujifilm RAW).
+    Supports JPEG, TIFF, PNG, HEIC.
     Raises exception with filepath if there's an error.
     """
     try:
         with Image.open(filepath) as image:
-            # For RAF files, Pillow can read EXIF from the embedded JPEG preview
             if hasattr(image, 'getexif'):
                 exif = image.getexif()
                 if exif:
@@ -306,7 +305,7 @@ def move_files_with_date(files_with_date_list, destination_folder):
 
 def main():
     # Get directory path from user
-    default_dir = r"C:\Users\brian\OneDrive\Pictures\Camera Roll"
+    default_dir = r"C:\Users\brian\Pictures\CameraRollWorkingCopy"
     directory = input(f"Enter the directory path to scan (default: {default_dir}): ").strip()
     
     # Use default if user just presses Enter

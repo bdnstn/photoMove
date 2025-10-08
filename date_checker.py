@@ -21,47 +21,27 @@ def get_date_taken(filepath):
     """
     Extract 'Date Taken' from image EXIF data.
     Returns the date if found, None otherwise.
-    ONLY uses DateTimeOriginal (actual capture time), not DateTime or DateTimeDigitized.
+    Supports JPEG, TIFF, PNG, HEIC, and RAF (Fujifilm RAW).
     Raises exception with filepath if there's an error.
     """
     try:
         with Image.open(filepath) as image:
-            # Method 1: Use getexif() - newer and more reliable
+            # For RAF files, Pillow can read EXIF from the embedded JPEG preview
             if hasattr(image, 'getexif'):
-                exif_data = image.getexif()
-                if exif_data:
-                    # ONLY check DateTimeOriginal (36867) - the actual photo capture time
-                    # Do NOT use:
-                    #   - 306 (DateTime) = file modification time
-                    #   - 36868 (DateTimeDigitized) = scan/digitization time
-                    value = exif_data.get(36867)  # DateTimeOriginal ONLY
-                    if value and isinstance(value, (str, bytes)):
-                        if isinstance(value, bytes):
-                            try:
-                                value = value.decode('utf-8')
-                            except:
-                                return None
-                        # Check if it looks like a date (not binary junk)
-                        if value and ':' in value and len(value) >= 10:
+                exif = image.getexif()
+                if exif:
+                    for tag_id, value in exif.items():
+                        tag = TAGS.get(tag_id, tag_id)
+                        if tag == 'DateTimeOriginal':
                             return value
-            
             # Method 2: Try _getexif() for older Pillow versions
             if hasattr(image, '_getexif'):
-                exif_data = image._getexif()
-                if exif_data and isinstance(exif_data, dict):
-                    for tag_id, value in exif_data.items():
-                        tag_name = TAGS.get(tag_id, '')
-                        # ONLY accept DateTimeOriginal
-                        if tag_name == 'DateTimeOriginal':
-                            if isinstance(value, (str, bytes)):
-                                if isinstance(value, bytes):
-                                    try:
-                                        value = value.decode('utf-8')
-                                    except:
-                                        return None
-                                if value and ':' in value and len(value) >= 10:
-                                    return value
-            
+                exif = image._getexif()
+                if exif:
+                    for tag_id, value in exif.items():
+                        tag = TAGS.get(tag_id, tag_id)
+                        if tag == 'DateTimeOriginal':
+                            return value
             return None
     except Exception as e:
         # Re-raise with filepath info
@@ -251,26 +231,48 @@ def scan_directory(directory_path):
 def move_files_with_date(files_with_date_list, destination_folder):
     """
     Move files with valid EXIF date taken to destination folder.
+    If a file with the same name exists and has a different size,
+    rename the source file by appending _dupN before the extension.
     Returns lists of moved and skipped files.
     """
     moved_files = []
     skipped_files = []
-    
+
     # Create destination folder if it doesn't exist
     if not os.path.exists(destination_folder):
         os.makedirs(destination_folder)
         print(f"Created destination folder: {destination_folder}")
-    
+
     print(f"\nMoving {len(files_with_date_list)} files to {destination_folder}...")
-    
+
     for filepath, date_taken, from_folder in files_with_date_list:
         filename = os.path.basename(filepath)
         dest_path = os.path.join(destination_folder, filename)
-        
-        # Check if file already exists in destination
+
         if os.path.exists(dest_path):
-            skipped_files.append((filepath, dest_path, "File already exists"))
-            print(f"  SKIP: {filename} (already exists)")
+            src_size = os.path.getsize(filepath)
+            dest_size = os.path.getsize(dest_path)
+            if src_size == dest_size:
+                skipped_files.append((filepath, dest_path, "File already exists (same size)"))
+                print(f"  SKIP: {filename} (already exists, same size)")
+                continue
+            else:
+                # Find a new name with _dupN
+                name, ext = os.path.splitext(filename)
+                n = 1
+                while True:
+                    new_filename = f"{name}_dup{n}{ext}"
+                    new_dest_path = os.path.join(destination_folder, new_filename)
+                    if not os.path.exists(new_dest_path):
+                        break
+                    n += 1
+                try:
+                    shutil.move(filepath, new_dest_path)
+                    moved_files.append((filepath, new_dest_path))
+                    print(f"  MOVED: {filename} as {new_filename} (size differs)")
+                except Exception as e:
+                    skipped_files.append((filepath, new_dest_path, str(e)))
+                    print(f"  ERROR: {filename} - {e}")
         else:
             try:
                 shutil.move(filepath, dest_path)
@@ -279,7 +281,7 @@ def move_files_with_date(files_with_date_list, destination_folder):
             except Exception as e:
                 skipped_files.append((filepath, dest_path, str(e)))
                 print(f"  ERROR: {filename} - {e}")
-    
+
     return moved_files, skipped_files
 
 def main():
@@ -306,6 +308,11 @@ def main():
     output_file = input("Enter output filename (default: scan_results.txt): ").strip()
     if not output_file:
         output_file = "scan_results.txt"
+    
+    # Append timestamp to output file name
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    name, ext = os.path.splitext(output_file)
+    output_file = f"{name}_{timestamp}{ext}"
     
     # Start timing
     start_time = time.time()
@@ -440,7 +447,7 @@ def main():
         
         print(f"\nSaving list of files to: {files_to_move_list}")
         with open(files_to_move_list, 'w', encoding='utf-8') as f:
-            f.write(f"Files with valid Date Taken to be moved to C:\\Users\\brian\\Pictures\\iCloud Photos\n")
+            f.write(f"Files with valid Date Taken to be moved to C:\\Users\\brian\\Pictures\\iCloud Photos\\Photos\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write("="*60 + "\n\n")
             for filepath, date_taken, from_folder in results['with_date_list']:
@@ -451,10 +458,10 @@ def main():
         print("\nPress Enter after reviewing the file list to continue...")
         input()
         
-        move_choice = input("Do you want to move these files to C:\\Users\\brian\\Pictures\\iCloud Photos? (y/n): ").strip().lower()
+        move_choice = input("Do you want to move these files to C:\\Users\\brian\\Pictures\\iCloud Photos\\Photos? (y/n): ").strip().lower()
         
         if move_choice == 'y':
-            destination = r"C:\Users\brian\Pictures\iCloud Photos"
+            destination = r"C:\Users\brian\Pictures\iCloud Photos\Photos"
             
             # Perform the move
             moved_files, skipped_files = move_files_with_date(results['with_date_list'], destination)

@@ -7,6 +7,7 @@ from datetime import datetime
 import re
 import shutil
 import warnings
+import subprocess
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -19,31 +20,24 @@ Image.MAX_IMAGE_PIXELS = None  # Remove limit entirely (or set to a higher value
 
 def get_date_taken(filepath):
     """
-    Extract 'Date Taken' from image EXIF data.
+    Extract 'Date Taken' from image metadata using ExifTool.
     Returns the date if found, None otherwise.
-    Supports JPEG, TIFF, PNG, HEIC.
+    Only uses DateTimeOriginal.
     Raises exception with filepath if there's an error.
     """
     try:
-        with Image.open(filepath) as image:
-            if hasattr(image, 'getexif'):
-                exif = image.getexif()
-                if exif:
-                    for tag_id, value in exif.items():
-                        tag = TAGS.get(tag_id, tag_id)
-                        if tag == 'DateTimeOriginal':
-                            return value
-            # Method 2: Try _getexif() for older Pillow versions
-            if hasattr(image, '_getexif'):
-                exif = image._getexif()
-                if exif:
-                    for tag_id, value in exif.items():
-                        tag = TAGS.get(tag_id, tag_id)
-                        if tag == 'DateTimeOriginal':
-                            return value
-            return None
+        # Call ExifTool and get DateTimeOriginal only
+        result = subprocess.run(
+            ['exiftool', '-DateTimeOriginal', '-d', '%Y:%m:%d %H:%M:%S', filepath],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        if result.returncode != 0:
+            raise Exception(result.stderr.strip())
+        for line in result.stdout.splitlines():
+            if 'Date/Time Original' in line:
+                return line.split(': ', 1)[1].strip()
+        return None
     except Exception as e:
-        # Re-raise with filepath info
         raise Exception(f"Error processing {filepath}: {str(e)}")
 
 def extract_date_from_path(filepath):

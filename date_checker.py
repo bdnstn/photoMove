@@ -129,7 +129,7 @@ def scan_directory(directory_path):
     image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.heic', '.heif'}
     
     # Video extensions to skip
-    video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.m4v', '.wmv', '.flv', '.webm', '.3gp'}
+    video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.m4v', '.wmv', '.flv', '.webm', '.3gp', '.mpg', '.mpeg'}
     
     files_with_date = 0
     files_without_date = 0
@@ -233,15 +233,22 @@ def move_files_with_date(files_with_date_list, destination_folder):
     Move files with valid EXIF date taken to destination folder.
     If a file with the same name exists and has a different size,
     rename the source file by appending _dupN before the extension.
+    If a file with the same name and size exists, move it to DuplicatePhotos folder.
     Returns lists of moved and skipped files.
     """
     moved_files = []
     skipped_files = []
+    duplicate_folder = r"C:\Users\brian\Pictures\DuplicatePhotos"
 
     # Create destination folder if it doesn't exist
     if not os.path.exists(destination_folder):
         os.makedirs(destination_folder)
         print(f"Created destination folder: {destination_folder}")
+
+    # Create duplicate folder if it doesn't exist
+    if not os.path.exists(duplicate_folder):
+        os.makedirs(duplicate_folder)
+        print(f"Created duplicate folder: {duplicate_folder}")
 
     print(f"\nMoving {len(files_with_date_list)} files to {destination_folder}...")
 
@@ -253,8 +260,21 @@ def move_files_with_date(files_with_date_list, destination_folder):
             src_size = os.path.getsize(filepath)
             dest_size = os.path.getsize(dest_path)
             if src_size == dest_size:
-                skipped_files.append((filepath, dest_path, "File already exists (same size)"))
-                print(f"  SKIP: {filename} (already exists, same size)")
+                # Move to duplicate folder instead of skipping
+                duplicate_path = os.path.join(duplicate_folder, filename)
+                # If duplicate filename exists, append _dupN
+                name, ext = os.path.splitext(filename)
+                n = 1
+                while os.path.exists(duplicate_path):
+                    duplicate_path = os.path.join(duplicate_folder, f"{name}_dup{n}{ext}")
+                    n += 1
+                try:
+                    shutil.move(filepath, duplicate_path)
+                    moved_files.append((filepath, duplicate_path))
+                    print(f"  MOVED TO DUPLICATE: {filename} -> {duplicate_path} (same size as destination)")
+                except Exception as e:
+                    skipped_files.append((filepath, duplicate_path, str(e)))
+                    print(f"  ERROR: {filename} - {e}")
                 continue
             else:
                 # Find a new name with _dupN

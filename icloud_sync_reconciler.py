@@ -29,11 +29,15 @@ def check_icloud_status(filepath):
         return f"error: {e}"
 
 def is_accessible(filepath):
-    """Test if file is actually accessible (not just a placeholder)"""
+    """Test if file appears to be accessible without triggering download"""
     try:
-        with open(filepath, 'rb') as f:
-            f.read(1024)  # Try to read first 1KB
-        return True
+        # Only check if file exists and get basic stats - don't read content
+        stat_info = os.stat(filepath)
+        # If file size is very small (< 1KB), it might be a placeholder
+        if stat_info.st_size < 1024:
+            return False
+        # Check if we can get file attributes without reading content
+        return os.path.exists(filepath) and stat_info.st_size > 0
     except (OSError, IOError, PermissionError):
         return False
 
@@ -57,19 +61,9 @@ def get_file_metadata(filepath):
         }
 
 def get_exif_date(filepath):
-    """Get DateTimeOriginal from EXIF data if available"""
-    try:
-        result = subprocess.run(
-            ['exiftool', '-DateTimeOriginal', '-d', '%Y:%m:%d %H:%M:%S', filepath],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
-            text=True, encoding='utf-8', errors='ignore', timeout=10
-        )
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                if 'Date/Time Original' in line:
-                    return line.split(': ', 1)[1].strip()
-    except Exception:
-        pass
+    """Get DateTimeOriginal from EXIF data if available - DISABLED to avoid downloads"""
+    # DISABLED: ExifTool would trigger download of cloud-only files
+    # Only enable this for files you know are already downloaded
     return None
 
 def analyze_icloud_sync():
@@ -303,10 +297,19 @@ def main():
     print("iCloud Photos Sync Reconciliation Tool")
     print("="*50)
     print("This tool will help identify differences between your PC")
-    print("and iCloud Photos to find files that may not be syncing.\n")
+    print("and iCloud Photos to find files that may not be syncing.")
+    print("")
+    print("⚠️  IMPORTANT: This tool is designed to NOT trigger downloads")
+    print("   of cloud-only files. It only reads file system metadata.")
+    print("")
     
     if not os.path.exists(PC_PHOTOS_DIR):
         print(f"Error: Directory not found: {PC_PHOTOS_DIR}")
+        return
+    
+    confirm = input("Continue with analysis? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("Analysis cancelled.")
         return
     
     # Main analysis

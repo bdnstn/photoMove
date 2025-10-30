@@ -250,44 +250,73 @@ def generate_file_list_for_manual_check():
     
     check_list_file = f'manual_check_list_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
     
-    suspicious_files = []
+    sample_files = []
+    file_count = 0
+    
+    print("Scanning files for manual verification sample...")
     
     for root, _, files in os.walk(PC_PHOTOS_DIR):
         for filename in files:
-            filepath = os.path.join(root, filename)
-            sync_status = check_icloud_status(filepath)
+            file_count += 1
             
-            # Focus on files that are most likely to have sync issues
-            if any(status in sync_status for status in ['cloud-only', 'syncing', 'error']):
+            # Only process photo/video files
+            if any(filename.lower().endswith(ext) for ext in ['.jpg', '.heic', '.mov', '.mp4', '.jpeg', '.avi', '.png']):
+                filepath = os.path.join(root, filename)
                 metadata = get_file_metadata(filepath)
-                exif_date = get_exif_date(filepath)
                 
-                suspicious_files.append({
-                    'filename': filename,
-                    'relative_path': os.path.relpath(filepath, PC_PHOTOS_DIR),
-                    'sync_status': sync_status,
-                    'size_mb': metadata['size'] / (1024**2),
-                    'created': metadata['created'].strftime('%Y-%m-%d') if metadata['created'] else 'Unknown',
-                    'exif_date': exif_date or 'None'
-                })
+                # Take a sample: every 300th file that's larger than 1MB
+                if (file_count % 300 == 0 and 
+                    metadata['size'] > 1024 * 1024 and  # > 1MB
+                    len(sample_files) < 200):  # Max 200 files
+                    
+                    sample_files.append({
+                        'filename': filename,
+                        'relative_path': os.path.relpath(filepath, PC_PHOTOS_DIR),
+                        'size_mb': metadata['size'] / (1024**2),
+                        'created': metadata['created'].strftime('%Y-%m-%d %H:%M') if metadata['created'] else 'Unknown',
+                        'extension': os.path.splitext(filename)[1].lower()
+                    })
+            
+            # Progress indicator
+            if file_count % 10000 == 0:
+                print(f"Processed {file_count:,} files, collected {len(sample_files)} samples...")
     
-    # Sort by creation date (newest first) to prioritize recent files
-    suspicious_files.sort(key=lambda x: x['created'], reverse=True)
+    print(f"Sample collection complete! Found {len(sample_files)} sample files from {file_count:,} total files")
     
+    # Sort by creation date (newest first)
+    sample_files.sort(key=lambda x: x['created'], reverse=True)
+    
+    # Write the results
     with open(check_list_file, 'w', encoding='utf-8') as f:
-        f.write("Files for Manual iCloud Verification\n")
+        f.write("Sample Files for Manual iCloud Verification\n")
         f.write(f"Generated: {datetime.now()}\n")
-        f.write("="*60 + "\n\n")
-        f.write("Instructions: Search for these files in iCloud.com Photos\n")
-        f.write("to verify if they exist online. Focus on the first 100-200 files.\n\n")
+        f.write(f"Sample of {len(sample_files)} files from {file_count:,} total files\n")
+        f.write("="*70 + "\n\n")
+        f.write("INSTRUCTIONS:\n")
+        f.write("1. Go to iCloud.com and log into Photos\n")
+        f.write("2. Search for these filenames (without the extension) in iCloud Photos\n")
+        f.write("3. If a file is NOT found in iCloud, it may not be properly synced\n")
+        f.write("4. Focus on files from different years/months to get good coverage\n\n")
+        f.write("TIP: Use Ctrl+F in iCloud Photos to search by filename\n")
+        f.write("="*70 + "\n\n")
         
-        for i, file_info in enumerate(suspicious_files[:500], 1):  # First 500 suspicious files
-            f.write(f"{i:3d}. {file_info['filename']}\n")
+        current_year = None
+        for i, file_info in enumerate(sample_files, 1):
+            # Group by year for easier organization
+            file_year = file_info['created'][:4] if file_info['created'] != 'Unknown' else 'Unknown'
+            if file_year != current_year:
+                current_year = file_year
+                f.write(f"\n--- {current_year} FILES ---\n")
+            
+            # Remove extension for searching in iCloud
+            name_without_ext = os.path.splitext(file_info['filename'])[0]
+            
+            f.write(f"{i:3d}. Search for: {name_without_ext}\n")
+            f.write(f"     Full filename: {file_info['filename']}\n")
             f.write(f"     Path: {file_info['relative_path']}\n")
-            f.write(f"     Status: {file_info['sync_status']}\n")
             f.write(f"     Size: {file_info['size_mb']:.1f} MB\n")
             f.write(f"     Created: {file_info['created']}\n")
-            f.write(f"     EXIF Date: {file_info['exif_date']}\n")
+            f.write(f"     Type: {file_info['extension']}\n")
             f.write("\n")
     
     print(f"Manual check list saved to: {check_list_file}")
